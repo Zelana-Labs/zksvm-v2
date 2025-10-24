@@ -1,0 +1,4 @@
+[workspace]
+members = [ "crates/bench-tool","crates/rollup-core" , "crates/rpc-server"]
+
+resolver = "2"
