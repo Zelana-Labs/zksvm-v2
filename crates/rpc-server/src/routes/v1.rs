@@ -5,7 +5,7 @@ use axum::{
     Json, Router,
 };
 use rollup_core::types::{Account, BlockHeader, Pubkey, Signature, Transaction, TransactionType};
-use rocksdb::IteratorMode;
+use rocksdb::{IteratorMode, OptimisticTransactionDB};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
@@ -53,7 +53,9 @@ async fn get_tip(State(state): State<AppState>) -> Result<Json<TipResponse>, Api
 }
 
 async fn get_account(State(state): State<AppState>, Path(pubkey_hex): Path<String>) -> Result<Json<Account>, ApiError> {
+    println!("hi");
     if pubkey_hex.len() != 64 { return Err(ApiError::BadRequest("Public key must be a 64-character hex string.".into())); }
+    println!("Fetching account: {}", pubkey_hex);
     let pubkey_bytes = hex::decode(pubkey_hex).map_err(|_| ApiError::BadRequest("Invalid hex characters in public key.".into()))?;
     match state.storage.rocksdb.get_cf(state.storage.cf_accounts(), &pubkey_bytes) {
         Ok(Some(bytes)) => Ok(Json(bincode::deserialize(&bytes).map_err(|_| ApiError::DatabaseUnavailable("Failed to deserialize account.".into()))?)),
@@ -86,6 +88,7 @@ async fn get_batch(State(state): State<AppState>, Path(id): Path<u64>) -> Result
 
 /// Receives a transaction, validates it, and forwards it to the Rollup Core's mempool.
 async fn send_transaction(State(state):State<AppState>,Json(payload): Json<SendTxRequest>)->Result<Json<SendTxResponse>,ApiError>{
+    println!("recieved");
 // 1. Validate and decode hex-encoded fields.
     let sender_bytes = hex::decode(&payload.sender)
         .map_err(|_| ApiError::BadRequest("Invalid hex for sender pubkey.".to_string()))?;
@@ -93,6 +96,60 @@ async fn send_transaction(State(state):State<AppState>,Json(payload): Json<SendT
         .map_err(|_| ApiError::BadRequest("Invalid hex for recipient pubkey.".to_string()))?;
     let signature_bytes = hex::decode(&payload.signature)
         .map_err(|_| ApiError::BadRequest("Invalid hex for signature.".to_string()))?;
+
+    //system level deposit from null address
+    if sender_bytes == [0;32]{
+        println!("[API] Detected system deposit for recipient: {}", payload.recipient);
+        // This is a "mint" (deposit), not a "transfer".
+        // We will update the database directly instead of sending to the sequencer.
+        let amount = match payload.tx_type {
+            TransactionType::Deposit { amount } => amount,
+            _ => return Err(ApiError::BadRequest("System deposit must have tx_type 'Deposit'".into())),
+        };
+
+        // Get a reference to the DB and the account column family
+        let db = &state.storage.rocksdb;
+        let cf_accounts = state.storage.cf_accounts();
+        let recipient_pubkey = Pubkey(recipient_bytes.try_into().map_err(|_| {
+            ApiError::BadRequest("Recipient pubkey must be 32 bytes.".to_string())
+        })?);
+        // Fetch or create the account, update balance
+        let mut updated_account: Account;
+
+        match db.get_cf(cf_accounts, &recipient_pubkey.0) {
+            Ok(Some(bytes)) => {
+                let mut account: Account = bincode::deserialize(&bytes)
+                    .map_err(|_| ApiError::DatabaseUnavailable("Failed to deserialize account.".into()))?;
+                account.balance = account.balance.checked_add(amount)
+                    .ok_or(ApiError::DatabaseUnavailable("Balance overflow".into()))?;
+                account.nonce += 1;
+                updated_account = account;
+            }
+            Ok(None) => {
+                updated_account = Account {
+                    balance: amount,
+                    nonce: 1,
+                };
+            }
+            Err(e) => return Err(ApiError::DatabaseUnavailable(format!("DB error: {}", e))),
+        }
+
+        // Save the updated account
+        let updated_bytes = bincode::serialize(&updated_account)
+            .map_err(|_| ApiError::DatabaseUnavailable("Failed to serialize account.".into()))?;
+        db.put_cf(cf_accounts, &recipient_pubkey.0, updated_bytes).unwrap();
+
+        println!(
+            "[API] Successfully credited {} with {} zSOL",
+            payload.recipient, amount
+        );
+
+        // Respond immediately — already processed.
+        return Ok(Json(SendTxResponse {
+            status: "processed",
+            signature: payload.signature,
+        }));
+    }
 
     // 2. Construct the core Transaction type.
     let tx = Transaction {

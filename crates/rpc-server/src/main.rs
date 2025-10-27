@@ -8,16 +8,19 @@ use rollup_core::{
     types::{Account, Pubkey, Signature, Transaction, TransactionType},
 };
 use state::AppState;
-use std::sync::Arc;
+use std::{env, path::PathBuf, sync::Arc};
 use tempfile::tempdir;
 use tokio::sync::mpsc;
 
 
 #[tokio::main]
 async fn main()->Result<(),Box<dyn std::error::Error>>{
-    let temp_dir = tempdir()?;
-    let rocks_path = temp_dir.path().join("rocksdb");
-    let sqlite_path = temp_dir.path().join("checkpoints.db");
+    dotenvy::dotenv().ok();
+
+    // let temp_dir = tempdir()?;
+    let db_path = env::var("DB_PATH").unwrap_or_else(|_| "temp_db_for_demo".to_string());
+     let rocks_path = PathBuf::from(&db_path).join("rocksdb");
+     let sqlite_path = PathBuf::from(&db_path).join("checkpoints.db");
     let storage = Arc::new(Storage::new(
         rocks_path.to_str().unwrap(),
         sqlite_path.to_str().unwrap()
