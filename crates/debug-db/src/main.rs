@@ -104,7 +104,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if key_bytes.len() >= 8 && value_bytes.len() >= 4 + 2 + 8 + 32 + 32 {
                         let batch_id = u64::from_be_bytes(key_bytes[..8].try_into().unwrap());
                         let magic = &value_bytes[0..4];
-                        let hdr_version = u16::from_be_bytes(value_bytes[4..6].try_into().unwrap());
+                        let hdr_version =
+                            u16::from_be_bytes(value_bytes[4..6].try_into().unwrap());
                         let new_root = &value_bytes[46..78];
 
                         rows.push(vec![
@@ -141,7 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let sender = &key_bytes[..32];
                         let ts_bytes = &key_bytes[32..40];
                         let ts = u64::from_be_bytes(ts_bytes.try_into().unwrap());
-                        let time = decode_timestamp_millis(ts);
+                        let time = decode_timestamp_nanos(ts);
 
                         let extra = if key_bytes.len() > 40 {
                             hex::encode(&key_bytes[40..])
@@ -181,7 +182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if key_bytes.len() >= 8 {
                         let ts_bytes = &key_bytes[..8];
                         let ts = u64::from_be_bytes(ts_bytes.try_into().unwrap());
-                        let time = decode_timestamp_millis(ts);
+                        let time = decode_timestamp_nanos(ts);
 
                         let extra = if key_bytes.len() > 8 {
                             hex::encode(&key_bytes[8..])
@@ -245,11 +246,11 @@ fn truncate(s: &str, max_len: usize) -> String {
     }
 }
 
-/// Interpret `ts` as milliseconds since Unix epoch and convert to `DateTime<Utc>`.
+/// Interpret `ts` as nanoseconds since Unix epoch and convert to `DateTime<Utc>`.
 /// Valt terug op 1970-01-01T00:00:00Z als het ongeldig is.
-fn decode_timestamp_millis(ts: u64) -> DateTime<Utc> {
-    let secs = (ts / 1000) as i64;
-    let nsecs = ((ts % 1000) * 1_000_000) as u32;
+fn decode_timestamp_nanos(ts: u64) -> DateTime<Utc> {
+    let secs = (ts / 1_000_000_000) as i64;
+    let nsecs = (ts % 1_000_000_000) as u32;
 
     Utc.timestamp_opt(secs, nsecs)
         .single()
