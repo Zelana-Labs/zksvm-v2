@@ -25,171 +25,344 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?,
     );
 
-    println!("📦 RocksDB path: {}\n", rocks_path.display());
-    println!("Available Column Families:");
-    for name in CF_NAMES {
-        println!("  - {}", name);
-    }
-    println!("\n──────────────────────────────\n");
+    println!("\n╔════════════════════════════════════════════════════════════════════╗");
+    println!("║                      ROCKSDB DATABASE INSPECTOR                    ║");
+    println!("║ Path: {:<58} ║", truncate(&rocks_path.display().to_string(), 58));
+    println!("╚════════════════════════════════════════════════════════════════════╝");
 
     for &cf_name in CF_NAMES {
-        println!("🔍 Inspecting Column Family: {}\n", cf_name);
+        match cf_name {
+            // ========== ACCOUNTS ==========
+            "accounts" => {
+                let cf = storage.cf_accounts();
+                let mut rows: Vec<Vec<String>> = Vec::new();
 
-        let cf = match cf_name {
-            "accounts" => storage.cf_accounts(),
-            "txs" => storage.cf_txs(),
-            "batches" => storage.cf_batches(),
-            "tx_by_sender" => storage.cf_tx_by_sender(),
-            "tx_by_time" => storage.cf_tx_by_time(),
-            _ => continue,
-        };
-
-        let mut count = 0usize;
-
-        for entry in storage.rocksdb.iterator_cf(&cf, IteratorMode::Start) {
-            let (key_bytes, value_bytes) = entry?;
-            count += 1;
-
-            match cf_name {
-                // ---------------- ACCOUNTS ----------------
-                "accounts" => {
+                for entry in storage.rocksdb.iterator_cf(&cf, IteratorMode::Start) {
+                    let (key_bytes, value_bytes) = entry?;
                     let pubkey: Pubkey = bincode::deserialize(&key_bytes)?;
                     let account: Account = bincode::deserialize(&value_bytes)?;
-                    println!(
-                        "👤 Account: {}\n   💰 Balance: {}\n   🔄 Nonce: {}\n",
+
+                    rows.push(vec![
                         hex::encode(pubkey.0),
-                        account.balance,
-                        account.nonce
-                    );
+                        account.balance.to_string(),
+                        account.nonce.to_string(),
+                    ]);
                 }
 
-                // ---------------- TXS ----------------
-                "txs" => {
+                print_table_header("ACCOUNTS", rows.len());
+                if rows.is_empty() {
+                    print_empty_table();
+                } else {
+                    print_wrapped_table(
+                        &["Pubkey", "Balance", "Nonce"],
+                        &[44, 11, 5],
+                        &["<", ">", ">"],
+                        &rows,
+                    );
+                }
+            }
+
+            // ========== TXS ==========
+            "txs" => {
+                let cf = storage.cf_txs();
+                let mut rows: Vec<Vec<String>> = Vec::new();
+
+                for entry in storage.rocksdb.iterator_cf(&cf, IteratorMode::Start) {
+                    let (key_bytes, value_bytes) = entry?;
                     let tx_id: Pubkey = bincode::deserialize(&key_bytes)?;
                     let tx: Transaction = bincode::deserialize(&value_bytes)?;
 
-                    println!(
-                        "🧾 Tx Key: {}\n   📤 Sender: {}\n   📥 Recipient: {}\n   💸 Type: {:?}\n",
+                    rows.push(vec![
                         hex::encode(tx_id.0),
                         hex::encode(tx.sender.0),
                         hex::encode(tx.recipient.0),
-                        tx.tx_type
-                    );
+                        format!("{:?}", tx.tx_type),
+                    ]);
                 }
 
-                // ---------------- BATCHES ----------------
-                //
-                // We don't rely on BlockHeader/serde here.
-                // We parse the known layout directly:
-                // key:   u64 (batch_id, big endian)
-                // value: magic[4] | hdr_version[2] | batch_id[8] | prev_root[32] | new_root[32] | ...rest
-                //
-                "batches" => {
-                    if key_bytes.len() >= 8 && value_bytes.len() >= 4 + 2 + 8 + 32 + 32 {
-                        let batch_id =
-                            u64::from_be_bytes(key_bytes[..8].try_into().unwrap());
+                print_table_header("TRANSACTIONS", rows.len());
+                if rows.is_empty() {
+                    print_empty_table();
+                } else {
+                    print_wrapped_table(
+                        &["Transaction ID", "Sender", "Recipient", "Type"],
+                        &[44, 44, 44, 20],
+                        &["<", "<", "<", "<"],
+                        &rows,
+                    );
+                }
+            }
 
+            // ========== BATCHES ==========
+            "batches" => {
+                let cf = storage.cf_batches();
+                let mut rows: Vec<Vec<String>> = Vec::new();
+
+                for entry in storage.rocksdb.iterator_cf(&cf, IteratorMode::Start) {
+                    let (key_bytes, value_bytes) = entry?;
+
+                    if key_bytes.len() >= 8 && value_bytes.len() >= 4 + 2 + 8 + 32 + 32 {
+                        let batch_id = u64::from_be_bytes(key_bytes[..8].try_into().unwrap());
                         let magic = &value_bytes[0..4];
-                        let hdr_version =
-                            u16::from_be_bytes(value_bytes[4..6].try_into().unwrap());
-                        let _batch_id_in_value =
-                            u64::from_be_bytes(value_bytes[6..14].try_into().unwrap());
-                        let _prev_root = &value_bytes[14..46];
+                        let hdr_version = u16::from_be_bytes(value_bytes[4..6].try_into().unwrap());
                         let new_root = &value_bytes[46..78];
 
-                        println!("🪣 Batch #{}", batch_id);
-                        println!("   🔣 Magic: {}", hex::encode(magic));
-                        println!("   📦 Version: {}", hdr_version);
-                        println!("   🌳 New Root: {}\n", hex::encode(new_root));
-                    } else {
-                        println!(
-                            "⚠️ Invalid batch entry: key={} value={}\n",
-                            hex::encode(&key_bytes),
-                            hex::encode(&value_bytes)
-                        );
+                        rows.push(vec![
+                            batch_id.to_string(),
+                            hex::encode(magic),
+                            hdr_version.to_string(),
+                            hex::encode(new_root),
+                        ]);
                     }
                 }
 
-                // ---------------- TX_BY_SENDER ----------------
-                //
-                // key = sender_pubkey[32] || ts[8] || maybe tx_id[..]
-                // value often empty (index only)
-                //
-                "tx_by_sender" => {
+                print_table_header("BATCHES", rows.len());
+                if rows.is_empty() {
+                    print_empty_table();
+                } else {
+                    print_wrapped_table(
+                        &["Batch", "Magic", "Version", "New Root"],
+                        &[6, 8, 7, 44],
+                        &[">", "<", ">", "<"],
+                        &rows,
+                    );
+                }
+            }
+
+            // ========== TX_BY_SENDER ==========
+            "tx_by_sender" => {
+                let cf = storage.cf_tx_by_sender();
+                let mut rows: Vec<Vec<String>> = Vec::new();
+
+                for entry in storage.rocksdb.iterator_cf(&cf, IteratorMode::Start) {
+                    let (key_bytes, _value_bytes) = entry?;
+
                     if key_bytes.len() >= 32 + 8 {
                         let sender = &key_bytes[..32];
                         let ts_bytes = &key_bytes[32..40];
                         let ts = u64::from_be_bytes(ts_bytes.try_into().unwrap());
+                        let time = decode_timestamp_millis(ts);
 
-                        let time: DateTime<Utc> =
-                            Utc.timestamp_opt(ts as i64, 0).single().unwrap_or_else(|| Utc.timestamp(0, 0));
-
-                        // Optional: rest of key might be tx_id, print if present
                         let extra = if key_bytes.len() > 40 {
-                            format!("   🔑 Extra (tx id?): {}\n", hex::encode(&key_bytes[40..]))
+                            hex::encode(&key_bytes[40..])
                         } else {
-                            "".to_string()
+                            String::new()
                         };
 
-                        print!(
-                            "📤 Sender: {}\n   🕒 Timestamp: {} UTC\n{}",
+                        rows.push(vec![
                             hex::encode(sender),
-                            time,
-                            extra
-                        );
-                    } else {
-                        println!(
-                            "⚠️ Invalid tx_by_sender key: {}\n",
-                            hex::encode(&key_bytes)
-                        );
+                            time.to_rfc3339(),
+                            extra,
+                        ]);
                     }
                 }
 
-                // ---------------- TX_BY_TIME ----------------
-                //
-                // key = ts[8] || maybe tx_id[..]
-                // value often empty
-                //
-                "tx_by_time" => {
-                    if key_bytes.len() >= 8 {
-                        let ts_bytes = &key_bytes[..8];
-                        let ts = u64::from_be_bytes(ts_bytes.try_into().unwrap());
-
-                        let time: DateTime<Utc> =
-                            Utc.timestamp_opt(ts as i64, 0).single().unwrap_or_else(|| Utc.timestamp(0, 0));
-
-                        let extra = if key_bytes.len() > 8 {
-                            format!("   🔑 Extra (tx id?): {}\n", hex::encode(&key_bytes[8..]))
-                        } else {
-                            "".to_string()
-                        };
-
-                        print!("🕒 Timestamp: {} UTC\n{}\n", time, extra);
-                    } else {
-                        println!(
-                            "⚠️ Invalid tx_by_time key: {}\n",
-                            hex::encode(&key_bytes)
-                        );
-                    }
-                }
-
-                // Fallback (shouldn't hit for known CFs)
-                _ => {
-                    println!(
-                        "Key: {}\nValue: {}\n",
-                        hex::encode(&key_bytes),
-                        hex::encode(&value_bytes)
+                print_table_header("TXS BY SENDER", rows.len());
+                if rows.is_empty() {
+                    print_empty_table();
+                } else {
+                    print_wrapped_table(
+                        &["Sender", "Timestamp", "Extra"],
+                        &[44, 25, 44],
+                        &["<", "<", "<"],
+                        &rows,
                     );
                 }
             }
-        }
 
-        if count == 0 {
-            println!("(empty)\n");
-        }
+            // ========== TX_BY_TIME ==========
+            "tx_by_time" => {
+                let cf = storage.cf_tx_by_time();
+                let mut rows: Vec<Vec<String>> = Vec::new();
 
-        println!("──────────────────────────────\n");
+                for entry in storage.rocksdb.iterator_cf(&cf, IteratorMode::Start) {
+                    let (key_bytes, _value_bytes) = entry?;
+
+                    if key_bytes.len() >= 8 {
+                        let ts_bytes = &key_bytes[..8];
+                        let ts = u64::from_be_bytes(ts_bytes.try_into().unwrap());
+                        let time = decode_timestamp_millis(ts);
+
+                        let extra = if key_bytes.len() > 8 {
+                            hex::encode(&key_bytes[8..])
+                        } else {
+                            String::new()
+                        };
+
+                        rows.push(vec![
+                            time.to_rfc3339(),
+                            extra,
+                        ]);
+                    }
+                }
+
+                print_table_header("TXS BY TIME", rows.len());
+                if rows.is_empty() {
+                    print_empty_table();
+                } else {
+                    print_wrapped_table(
+                        &["Timestamp", "Extra"],
+                        &[25, 44],
+                        &["<", "<"],
+                        &rows,
+                    );
+                }
+            }
+
+            _ => {
+                print_table_header(&cf_name.to_uppercase(), 0);
+                println!("╔════════════════════════════════════════════════════════════════════╗");
+                println!("║                    (Unsupported Column Family)                     ║");
+                println!("╚════════════════════════════════════════════════════════════════════╝");
+            }
+        }
     }
 
+    println!("\n╔════════════════════════════════════════════════════════════════════╗");
+    println!("║                     INSPECTION COMPLETE                            ║");
+    println!("╚════════════════════════════════════════════════════════════════════╝\n");
+
     Ok(())
+}
+
+fn print_table_header(name: &str, count: usize) {
+    println!("┌────────────────────────────────────────────────────────────────────┐");
+    println!("│ 📊 {:^62} │", format!("{} ({})", name, count));
+    println!("└────────────────────────────────────────────────────────────────────┘");
+}
+
+fn print_empty_table() {
+    println!("╔════════════════════════════════════════════════════════════════════╗");
+    println!("║                            (No data)                               ║");
+    println!("╚════════════════════════════════════════════════════════════════════╝");
+}
+
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("...{}", &s[s.len() - (max_len - 3)..])
+    }
+}
+
+/// Interpret `ts` as milliseconds since Unix epoch and convert to `DateTime<Utc>`.
+/// Valt terug op 1970-01-01T00:00:00Z als het ongeldig is.
+fn decode_timestamp_millis(ts: u64) -> DateTime<Utc> {
+    let secs = (ts / 1000) as i64;
+    let nsecs = ((ts % 1000) * 1_000_000) as u32;
+
+    Utc.timestamp_opt(secs, nsecs)
+        .single()
+        .unwrap_or_else(|| Utc.timestamp_opt(0, 0).single().unwrap())
+}
+
+/// Generic table printer with wrapping.
+fn print_wrapped_table(
+    headers: &[&str],
+    widths: &[usize],
+    aligns: &[&str],
+    rows: &[Vec<String>],
+) {
+    assert_eq!(headers.len(), widths.len());
+    assert_eq!(widths.len(), aligns.len());
+
+    // top border
+    print!("╔");
+    for (i, w) in widths.iter().enumerate() {
+        print!("{}", "═".repeat(w + 2));
+        if i < widths.len() - 1 {
+            print!("╦");
+        }
+    }
+    println!("╗");
+
+    // header row
+    print!("║");
+    for ((h, w), _) in headers.iter().zip(widths.iter()).zip(aligns.iter()) {
+        let formatted = format!("{:^width$}", h, width = *w);
+        print!(" {} ║", formatted);
+    }
+    println!();
+
+    // header separator
+    print!("╠");
+    for (i, w) in widths.iter().enumerate() {
+        print!("{}", "═".repeat(w + 2));
+        if i < widths.len() - 1 {
+            print!("╬");
+        }
+    }
+    println!("╣");
+
+    // data rows
+    for (row_idx, row) in rows.iter().enumerate() {
+        let is_last = row_idx == rows.len() - 1;
+        print_wrapped_row(row, widths, aligns, is_last);
+    }
+
+    // bottom border
+    if !rows.is_empty() {
+        print!("╚");
+        for (i, w) in widths.iter().enumerate() {
+            print!("{}", "═".repeat(w + 2));
+            if i < widths.len() - 1 {
+                print!("╩");
+            }
+        }
+        println!("╝");
+    }
+}
+
+/// Wrap a single cell string into multiple lines of at most `width` chars.
+fn wrap_cell(s: &str, width: usize) -> Vec<String> {
+    if s.is_empty() {
+        return vec![String::new()];
+    }
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < s.len() {
+        let end = (i + width).min(s.len());
+        out.push(s[i..end].to_string());
+        i = end;
+    }
+    out
+}
+
+/// Print one logical table row, wrapping long cells onto multiple lines.
+fn print_wrapped_row(cells: &[String], widths: &[usize], aligns: &[&str], is_last: bool) {
+    let wrapped: Vec<Vec<String>> = cells
+        .iter()
+        .zip(widths.iter())
+        .map(|(s, &w)| wrap_cell(s, w))
+        .collect();
+
+    let max_lines = wrapped.iter().map(|lines| lines.len()).max().unwrap_or(0);
+
+    for line_idx in 0..max_lines {
+        print!("║");
+        for (col_idx, col_lines) in wrapped.iter().enumerate() {
+            let w = widths[col_idx];
+            let content = col_lines.get(line_idx).map(|s| s.as_str()).unwrap_or("");
+
+            let formatted = match aligns[col_idx] {
+                ">" => format!("{:>width$}", content, width = w),
+                "^" => format!("{:^width$}", content, width = w),
+                _ => format!("{:<width$}", content, width = w),
+            };
+
+            print!(" {} ║", formatted);
+        }
+        println!();
+    }
+
+    if !is_last {
+        print!("╟");
+        for (i, &w) in widths.iter().enumerate() {
+            print!("{}", "─".repeat(w + 2));
+            if i < widths.len() - 1 {
+                print!("╫");
+            }
+        }
+        println!("╢");
+    }
 }
